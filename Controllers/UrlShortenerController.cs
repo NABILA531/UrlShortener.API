@@ -29,4 +29,19 @@ public class UrlShortenerController : ControllerBase
             ShortUrl = $"http://localhost:5275/api/UrlShortener/{shortCode}"
         });
     }
+
+    [HttpGet("{shortCode}")]
+    public async Task<IActionResult> RedirectToLongUrl(string shortCode)
+    {
+        var database = _redis.GetDatabase();
+
+        var longUrl = await database.StringGetAsync(shortCode);
+
+        if (string.IsNullOrEmpty(longUrl))
+        {
+            return NotFound("Short URL not found.");
+        }
+
+        return Redirect(longUrl!);
+    }
 }
