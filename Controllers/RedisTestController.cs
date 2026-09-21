@@ -1,10 +1,12 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using StackExchange.Redis;
 
 namespace UrlShortener.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
 public class RedisTestController : ControllerBase
 {
     private readonly IConnectionMultiplexer _redis;
@@ -15,7 +17,7 @@ public class RedisTestController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> TestRedis()
+    public async Task<IActionResult> Get()
     {
         var database = _redis.GetDatabase();
 
