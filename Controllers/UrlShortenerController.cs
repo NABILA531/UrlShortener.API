@@ -1,5 +1,8 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using StackExchange.Redis;
+using System.Security.Claims;
 using System.Text.RegularExpressions;
 using UrlShortener.API.Models;
 
@@ -17,6 +20,7 @@ public class UrlShortenerController : ControllerBase
     }
 
     [HttpPost]
+    [Authorize]
     public async Task<IActionResult> ShortenUrl(
         [FromBody] string longUrl,
         [FromQuery] string? alias = null,
@@ -36,7 +40,15 @@ public class UrlShortenerController : ControllerBase
 
         if (expirationMinutes.HasValue && expirationMinutes.Value <= 0)
         {
-            return BadRequest("Expiration time must be greater than 0 minutes.");
+            return BadRequest(
+                "Expiration time must be greater than 0 minutes.");
+        }
+
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized("User ID not found in token.");
         }
 
         var database = _redis.GetDatabase();
@@ -44,19 +56,20 @@ public class UrlShortenerController : ControllerBase
         var shortCode = string.IsNullOrWhiteSpace(alias)
             ? Guid.NewGuid().ToString("N")[..6]
             : alias.Trim();
+
         if (!Regex.IsMatch(shortCode, "^[a-zA-Z0-9]+$"))
         {
-            return BadRequest("Short code can only contain letters and numbers.");
+            return BadRequest(
+                "Short code can only contain letters and numbers.");
         }
 
         if (shortCode.Length < 3 || shortCode.Length > 20)
         {
-            return BadRequest("Short code must be between 3 and 20 characters.");
+            return BadRequest(
+                "Short code must be between 3 and 20 characters.");
         }
 
-        var exists = await database.KeyExistsAsync(shortCode);
-
-        if (exists)
+        if (await database.KeyExistsAsync(shortCode))
         {
             return Conflict("This short code is already in use.");
         }
@@ -73,15 +86,66 @@ public class UrlShortenerController : ControllerBase
             await database.StringSetAsync(shortCode, longUrl);
         }
 
+        await database.SetAddAsync(
+            $"user:urls:{userId}",
+            shortCode);
+
         return Ok(new ShortUrlResponse
         {
             ShortCode = shortCode,
-            ShortUrl = $"http://localhost:5275/api/UrlShortener/{shortCode}"
+            ShortUrl =
+            $"http://localhost:5000/api/UrlShortener/{shortCode}"
         });
     }
 
+    [HttpGet("my")]
+    [Authorize]
+    public async Task<IActionResult> GetMyUrls()
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized("User ID not found in token.");
+        }
+
+        var database = _redis.GetDatabase();
+
+        var shortCodes = await database.SetMembersAsync(
+            $"user:urls:{userId}");
+
+        var urls = new List<object>();
+
+        foreach (var code in shortCodes)
+        {
+            var shortCode = code.ToString();
+
+            var longUrl = await database.StringGetAsync(shortCode);
+
+            if (longUrl.IsNullOrEmpty)
+            {
+                continue;
+            }
+
+            var clicks = await database.StringGetAsync(
+                $"clicks:{shortCode}");
+
+            urls.Add(new
+            {
+                ShortCode = shortCode,
+                ShortUrl =
+    $"http://localhost:5000/api/UrlShortener/{shortCode}",
+                LongUrl = longUrl.ToString(),
+                Clicks = clicks.IsNullOrEmpty ? 0 : (long)clicks
+            });
+        }
+
+        return Ok(urls);
+    }
+
     [HttpGet("{shortCode}")]
-    public async Task<IActionResult> RedirectToLongUrl(string shortCode)
+    public async Task<IActionResult> RedirectToLongUrl(
+        string shortCode)
     {
         var database = _redis.GetDatabase();
 
@@ -92,11 +156,11 @@ public class UrlShortenerController : ControllerBase
             return NotFound("Short URL not found.");
         }
 
-        // Increase click count
         await database.StringIncrementAsync($"clicks:{shortCode}");
 
         return Redirect(longUrl.ToString());
     }
+
     [HttpGet("{shortCode}/stats")]
     public async Task<IActionResult> GetStats(string shortCode)
     {
@@ -109,7 +173,8 @@ public class UrlShortenerController : ControllerBase
             return NotFound("Short URL not found.");
         }
 
-        var clicks = await database.StringGetAsync($"clicks:{shortCode}");
+        var clicks = await database.StringGetAsync(
+            $"clicks:{shortCode}");
 
         return Ok(new
         {
