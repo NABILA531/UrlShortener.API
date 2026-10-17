@@ -183,4 +183,38 @@ public class UrlShortenerController : ControllerBase
             Clicks = clicks.IsNullOrEmpty ? 0 : (long)clicks
         });
     }
+
+    [HttpDelete("{shortCode}")]
+    [Authorize]
+    public async Task<IActionResult> DeleteUrl(string shortCode)
+    {
+        var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+
+        if (string.IsNullOrEmpty(userId))
+        {
+            return Unauthorized("User ID not found in token.");
+        }
+
+
+        var database = _redis.GetDatabase();
+        var userUrlsKey = $"user:urls:{userId}";
+
+        var isOwner = await database.SetContainsAsync(
+            userUrlsKey, shortCode);
+
+        if (!isOwner)
+        {
+            return NotFound("Short URL not found in your account.");
+        }
+
+        await database.KeyDeleteAsync(shortCode);
+        await database.KeyDeleteAsync($"clicks:{shortCode}");
+        await database.SetRemoveAsync(userUrlsKey, shortCode);
+
+        return Ok(new
+        {
+            Message = "Short URL deleted successfully.",
+            ShortCode = shortCode
+        });
+    }
 }

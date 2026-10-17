@@ -15,28 +15,37 @@ namespace UrlShortener.API.Controllers;
 [Route("api/[controller]")]
 public class AuthController : ControllerBase
 {
+
     private readonly IConnectionMultiplexer _redis;
+    private readonly string _jwtKey;
 
-    private const string JwtKey = "UrlShortenerSuperSecretKey123456789";
-
-    public AuthController(IConnectionMultiplexer redis)
+    public AuthController(
+        IConnectionMultiplexer redis,
+        IConfiguration configuration)
     {
         _redis = redis;
+
+        _jwtKey = configuration["Jwt:Key"]
+            ?? throw new InvalidOperationException(
+                "JWT key is not configured.");
     }
 
+
+
     [HttpPost("register")]
-    public async Task<IActionResult> Register([FromBody] User user)
+    public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
-        if (string.IsNullOrWhiteSpace(user.Username) ||
-            string.IsNullOrWhiteSpace(user.Email) ||
-            string.IsNullOrWhiteSpace(user.PasswordHash))
+        if (string.IsNullOrWhiteSpace(request.Username) ||
+            string.IsNullOrWhiteSpace(request.Email) ||
+            string.IsNullOrWhiteSpace(request.Password))
         {
             return BadRequest("Username, email and password are required.");
         }
 
         var database = _redis.GetDatabase();
 
-        var emailKey = $"user:email:{user.Email.ToLower()}";
+        var email = request.Email.Trim().ToLowerInvariant();
+        var emailKey = $"user:email:{email}";
 
         var existingUser = await database.StringGetAsync(emailKey);
 
@@ -45,19 +54,18 @@ public class AuthController : ControllerBase
             return Conflict("A user with this email already exists.");
         }
 
-        user.Id = Guid.NewGuid().ToString();
-
-        user.PasswordHash = HashPassword(user.PasswordHash);
+        var user = new User
+        {
+            Id = Guid.NewGuid().ToString(),
+            Username = request.Username.Trim(),
+            Email = email,
+            PasswordHash = HashPassword(request.Password)
+        };
 
         var userJson = JsonSerializer.Serialize(user);
 
-        await database.StringSetAsync(
-            $"user:{user.Id}",
-            userJson);
-
-        await database.StringSetAsync(
-            emailKey,
-            user.Id);
+        await database.StringSetAsync($"user:{user.Id}", userJson);
+        await database.StringSetAsync(emailKey, user.Id);
 
         return Ok(new
         {
@@ -68,18 +76,21 @@ public class AuthController : ControllerBase
         });
     }
 
+
+
     [HttpPost("login")]
-    public async Task<IActionResult> Login([FromBody] User loginUser)
+    public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
-        if (string.IsNullOrWhiteSpace(loginUser.Email) ||
-            string.IsNullOrWhiteSpace(loginUser.PasswordHash))
+        if (string.IsNullOrWhiteSpace(request.Email) ||
+            string.IsNullOrWhiteSpace(request.Password))
         {
             return BadRequest("Email and password are required.");
         }
 
         var database = _redis.GetDatabase();
 
-        var emailKey = $"user:email:{loginUser.Email.ToLower()}";
+        var email = request.Email.Trim().ToLowerInvariant();
+        var emailKey = $"user:email:{email}";
 
         var userId = await database.StringGetAsync(emailKey);
 
@@ -102,7 +113,7 @@ public class AuthController : ControllerBase
             return Unauthorized("Invalid email or password.");
         }
 
-        var hashedPassword = HashPassword(loginUser.PasswordHash);
+        var hashedPassword = HashPassword(request.Password);
 
         if (user.PasswordHash != hashedPassword)
         {
@@ -121,7 +132,7 @@ public class AuthController : ControllerBase
         });
     }
 
-    private static string GenerateJwtToken(User user)
+    private string GenerateJwtToken(User user)
     {
         var claims = new[]
         {
@@ -131,11 +142,10 @@ public class AuthController : ControllerBase
         };
 
         var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(JwtKey));
+            Encoding.UTF8.GetBytes(_jwtKey));
 
         var credentials = new SigningCredentials(
-            key,
-            SecurityAlgorithms.HmacSha256);
+            key, SecurityAlgorithms.HmacSha256);
 
         var token = new JwtSecurityToken(
             claims: claims,
@@ -155,3 +165,4 @@ public class AuthController : ControllerBase
         return Convert.ToBase64String(hash);
     }
 }
+
